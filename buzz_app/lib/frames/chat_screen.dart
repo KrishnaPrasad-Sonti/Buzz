@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:buzz_app/components/chatupdate_notifier.dart';
 import 'package:buzz_app/models/message_model.dart';
 import 'package:buzz_app/screens/chat_manager.dart';
-
+import 'package:flutter/services.dart'; // For Clipboard
 import 'package:flutter/material.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -61,7 +61,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 Future<void> _initUdpSocket() async {
   try {
-    _udpSocket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 4445); // ✅ BIND TO 4445
+    _udpSocket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 4445);
     print("✅ UDP socket bound to ${_udpSocket?.address.address}:${_udpSocket?.port}");
 
     _udpSocket?.listen((event) {
@@ -80,12 +80,17 @@ Future<void> _initUdpSocket() async {
               timestamp: DateTime.parse(decoded['timestamp']),
             );
 
-            // Save received message
-            ChatManager().addMessage(msg).then((_) {
-              print("📝 Stored message from ${msg.sender}");
-              _chatUpdateNotifier.notifyMessageReceived(msg);
-            });
-
+            // --- IMPORTANT MODIFICATION HERE ---
+            // Only process the message if it's NOT from the current user.
+            // This prevents the self-sent message from being re-added by this listener.
+            if (msg.sender != widget.myUsername) {
+              ChatManager().addMessage(msg).then((_) {
+                print("📝 Stored received message from ${msg.sender}");
+                _chatUpdateNotifier.notifyMessageReceived(msg);
+              });
+            } else {
+              print("🚫 ChatScreen: Ignored self-sent message echoed back. (Sender: ${msg.sender}, MyUser: ${widget.myUsername})");
+            }
           } catch (e) {
             print("❌ Failed to decode message: $e");
           }
@@ -96,8 +101,6 @@ Future<void> _initUdpSocket() async {
     print("❌ Failed to bind UDP socket: $e");
   }
 }
-
-
   Future<void> _loadChatHistory() async {
     await ChatManager().loadMessages(widget.myUsername, widget.friendUsername);
     setState(() {
@@ -105,7 +108,7 @@ Future<void> _initUdpSocket() async {
     });
   }
 
-Future<void> _sendMessage() async {
+ Future<void> _sendMessage() async {
   final text = _controller.text.trim();
   if (text.isEmpty || _udpSocket == null) {
     print("⚠️ Message is empty or socket is null");
@@ -119,7 +122,14 @@ Future<void> _sendMessage() async {
     timestamp: DateTime.now(),
   );
 
-  await ChatManager().addMessage(msg);
+  // --- START MODIFICATION ---
+  // 1. Immediately add the message to the ChatManager and update local state
+  await ChatManager().addMessage(msg); // This is the first addition
+  setState(() {
+    _messages = ChatManager().getMessages(widget.myUsername, widget.friendUsername);
+  });
+  _controller.clear(); // Clear the input field right after sending and updating UI
+
   print("🚀 Sending message: '${msg.message}' to ${widget.friendIp}:4445");
 
   try {
@@ -139,42 +149,45 @@ Future<void> _sendMessage() async {
   } catch (e) {
     print("❌ UDP send failed: $e");
   }
-
-  setState(() {
-    _messages.add(msg);
-    _controller.clear();
-  });
 }
 
-
- Widget _buildMessageBubble(ChatMessageModel msg) {
+Widget _buildMessageBubble(ChatMessageModel msg) {
+  print("📩 Building bubble: ${msg.sender} → ${msg.receiver} :: ${msg.message}");
   final isMe = msg.sender == widget.myUsername;
-  return Align(
-    alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-    child: Container(
-      padding: const EdgeInsets.all(12),
-      margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
-      decoration: BoxDecoration(
-        color: isMe ? const Color(0xFFD1C4E9) : const Color(0xFFEDE7F6),
-        borderRadius: BorderRadius.only(
-          topLeft: const Radius.circular(12),
-          topRight: const Radius.circular(12),
-          bottomLeft: Radius.circular(isMe ? 12 : 0),
-          bottomRight: Radius.circular(isMe ? 0 : 12),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            offset: const Offset(1, 2),
-            blurRadius: 4,
+  return GestureDetector(
+    onLongPress: () {
+      Clipboard.setData(ClipboardData(text: msg.message));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Copied to clipboard")),
+      );
+    },
+    child: Align(
+      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
+        decoration: BoxDecoration(
+          color: isMe ? const Color(0xFFD1C4E9) : const Color(0xFFEDE7F6),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(12),
+            topRight: const Radius.circular(12),
+            bottomLeft: Radius.circular(isMe ? 12 : 0),
+            bottomRight: Radius.circular(isMe ? 0 : 12),
           ),
-        ],
-      ),
-      child: Text(
-        msg.message,
-        style: const TextStyle(
-          fontSize: 16,
-          color: Colors.black87,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              offset: const Offset(1, 2),
+              blurRadius: 4,
+            ),
+          ],
+        ),
+        child: Text(
+          msg.message,
+          style: const TextStyle(
+            fontSize: 16,
+            color: Colors.black87,
+          ),
         ),
       ),
     ),
